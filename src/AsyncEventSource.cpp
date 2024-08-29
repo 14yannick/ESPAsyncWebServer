@@ -236,17 +236,6 @@ void AsyncEventSourceClient::send(const char *message, const char *event, uint32
 }
 
 void AsyncEventSourceClient::_runQueue(){
-#if defined(ESP32)
-  if(!this->_messageQueue_mutex.try_lock()) {
-    return;
-  }
-#else
-  if(this->_messageQueue_processing){
-    return;
-  }
-  this->_messageQueue_processing = true;
-#endif // ESP32
-
   while(!_messageQueue.isEmpty() && _messageQueue.front()->finished()){
     _messageQueue.remove(_messageQueue.front());
   }
@@ -256,12 +245,6 @@ void AsyncEventSourceClient::_runQueue(){
     if(!(*i)->sent())
       (*i)->send(_client);
   }
-
-#if defined(ESP32)
-  this->_messageQueue_mutex.unlock();
-#else
-  this->_messageQueue_processing = false;
-#endif // ESP32
 }
 
 
@@ -333,11 +316,25 @@ void AsyncEventSource::send(const char *message, const char *event, uint32_t id,
 
 
   String ev = generateEventMessage(message, event, id, reconnect);
+  char* buf = static_cast<char*>(malloc(ev.length()));
+  memcpy(buf, ev.c_str(), ev.length());
+  Async::post([this](void* buffer, void* length){
+    send_async(buffer, length);
+  }, buf, reinterpret_cast<void*>(ev.length()));
+}
+
+void AsyncEventSource::send_async(void* buffer, void* length)
+{
+  // this is called by "async_tcp" - task
+  char* buf = static_cast<char*>(buffer);
+  size_t len = reinterpret_cast<size_t>(length);
   for(const auto &c: _clients){
     if(c->connected()) {
-      c->write(ev.c_str(), ev.length());
+      c->write(buf, len);
     }
   }
+  // ets_printf("***Async func called\n");
+  free((void*)buf);
 }
 
 size_t AsyncEventSource::count() const {
